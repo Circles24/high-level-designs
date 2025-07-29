@@ -33,38 +33,36 @@
 ### Back of the envelop calculations
 - redirection req rate - 10k - 20k per second
 - writes - 1k per second
-- storage - 14 TB for 5 year
+- storage - 1 TB overall
 - number of short urls available with 8 bytes - 0-9 + a-z + A-Z = 62 possibilities for each char - 62 ^ 8 - 2.1834011e+14 which is 200 trillion 
-- assuming 1% urls to be hot spots, their storage would be - 140 GB - so we can serve these from Redis or Memcache
+- assuming 10% urls to be hot spots, their storage would be - 100 GB - so we can serve these from Redis or Memcache
 
 ### Schema
 
 Short url
 1. id - 8 bytes
 2. short url - 8 bytes
-3. long url - on avg - 56 bytes
+3. long url - on avg - 80 bytes
 4. ttl day - 8 bytes
 
-Total storage for a short url - 80 bytes
-Total storage per day - 80 bytes * 100 M - 8 GB per day
-Total storage for 5 years - 5 * 365 * 8 GB - 14 TB
+Total storage for a short url - 104 bytes
+Total storage per day - 104 bytes * 100 M - 8 GB per day
+Total storage for overall - 104 bytes * 10 Billion - 1 TB
 
 ## Notes
-1. Since the write requirements are not huge so essentially we only have to care about the redirects
-2. In order to serve the redirects fast we should be redirecting them through in memory structure
-3. The fallback DB lookup for a short url should also be fast, essentially we can utilise key value db for capturing this like dynamodb
+1. Since the write requirements are not huge so essentially we only have to care about the redirects ie the reads
+2. In order to serve the redirects fast we should be redirecting them through in memory structure ie a read through cache
+3. The fallback DB lookup for a short url should also be fast, essentially we can btree index on postgres for faster lookup on shorturl
 4. Another problem would be generating the short urls there are many ways to tackle them like the following
     - Random short url generation, this should be fine for starting out when chances for collisions are low, once we start getting collisions it would be better to opt for other ways
     - Keep a single counter in memory or in DB which can tell use the next number to be used, which will further be encoded as per the encoding rules, this would become a single point of failure and a bottleneck if we want to scale the writes further.
-    - Another way would be to split up ranges and assign them to different mysql shards so that service can connect to their own respective shard and generate the short url, this would scale better sice we dont have single point of failure and the choke point is also distributed among shards
-    - Another way to further optimise this would be to keep the short urls pregenerated in the db shards and as an when the requests come, it can acquire one from the generated ones, this would make sure that there is no contention as no lock would be required, lets go ahead with this one.
+    - Another way to further optimise this would be to keep the short urls pregenerated in the db and as an when the requests come, it can acquire one from the generated ones, this would make sure that there is no contention as no lock would be required, lets go ahead with this one.
     - Snowflake style id generation, this is a good read on how we can generate unique numbers globally without any DB
 
-## Database choice
-1. Redis for serving hot redirects top 1%
-2. Dynamodb for short url to long url mapping - very good horizontally scalbility
-3. GSI on ttl day to figure out the short urls expiring on a certain day
-
+## Database
+1. Redis for serving hot redirects top 10%
+2. Postgres for short url to long url mapping - with btree index on shorturl
+3. btree index on ttl
 
 ## Architecture diagram
 
@@ -74,30 +72,30 @@ Total storage for 5 years - 5 * 365 * 8 GB - 14 TB
 
 1. Short url creation flow
     - User hits the service with the long url
-    - Service picks a short url from the mysql shard which is precomputed
-    - Service writes this back into a short url table
-    - Change data capture eventually picks this from mysql (eventual consistency here)
-    - This entry is written to dynamodb which takes care of redirection
+    - Service picks a short url from the postgres which is precomputed
+    - Service writes this back into the short url table
 2. User hits the short url
     - Service first checks the Redis for the short url
-    - Service then fetches the short url from dynamodb using key loop up (key is the short url here)
+    - Service then fetches the short url from postgres using the index
+    - Service writes back the entry in Redis
     - Service returns the mapped long url
+    - Service then writes this event into kafka
 3. Short url precomputation 
     - cron job reads the number of available short urls ready to be picked up
     - if we already have more than some configured short urls in the db then do nothing
-    - a cron job reads the last offset from the mysql shard
+    - a cron job reads the last offset from the Postgres
     - cron generates the short url by encoding that number representation
-    - then cron job writes it back into the mysql, and increase the counter using a transaction
+    - then cron job writes it back into the Postgres, and increase the counter using a transaction
 4. Expiring the short urls
     - cron job reads the short urls expiring today from ddb using a paginated query
-    - this query should be fast since we'll be using global secondary index on the ttl day field
-    - then write those short urls in a kafka topic
-    - then start deleting those entries from ddb
-    - a job picks these short urls from the kafka and injects it back into the mysql table for available short urls
-
+    - cron job audits these shorts urls into a kafka table
+    - job then drops those urls
+ 
+5. Analytics pipeline
+    - Flink job keeps reading the redirection events from the kafka queue, aggregates them for sometime then writes them into the warehouse
+    - Another flink keeps reading the url drop topic and add the analytics for this
 
 Further notes:
-- Dynamodb natively supports TTL, so we can utilise that and hook the mysql insertion logic into the change data capture stream
 - We can also keep some hot urls in a LRU style in mem on the servers itself to reduce the load on redis for popular urls
 - We can also opt to use bloom filter before hitting the Redis, this would reduce a lot of cache miss and it would only require constant mem
 
