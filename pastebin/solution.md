@@ -82,10 +82,11 @@ Total storage for overall - 64 bytes * 10 Billion - 640 GB
 ## Flows
 
 1. Paste creation flow
-    - User hits the service with the paste data
+    - User fetches the presigned url
+    - User uploads the paste into object store
+    - User hits the service with the paste meta data
     - Service creates a short url using snowflake style id creation
-    - Service uploads the paste into blob storage
-    - Service writes this back into the paste table
+    - Service creates a paste entity in the pastes table
 2. User hits the short url
     - Service first checks the Redis for the short url
     - Service then fetches the short url from postgres using the index
