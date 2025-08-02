@@ -61,9 +61,13 @@ Post
 5. photo urls - 100 bytes
 6. ...
 
-Following
-1. follower id - 8 bytes
+User Following
+1. user id - 8 bytes
 2. following id - 8 bytes
+
+User Followers
+1. user id - 8 bytes
+2. follower id - 8 bytes
 
 Feed entry
 1. user id
@@ -80,10 +84,10 @@ Feed entry
 6. We can utlise change data capture on users and profile table to move it to elastic search cluster
 
 ## Database
-1. Postgres for followers table with index on follower id and following id
+1. Cassandra for followers table with partition on user id, sort by following id, change data capture to build User following table in async 
 2. Cassandra for posts table, partition by user id, sort id to be creation timestamp
 3. Cassandra table for feed, partioned by user id, sort id to be creation timestamp
-4. Followers data should be cached in redis for fastlookup when fanning out posts
+4. Followers data should be cached in redis and in mem in Flink nodes for fast lookup when fanning out posts
 5. Postgres for users and profile data, here the query pattern is just read by primary key, which would be fast with postgres
 
 ## Architecture diagram
@@ -119,13 +123,14 @@ Feed entry
     - User clicks on the follow button
     - System enters the entry into the following table
     - Since we are utlising a write through cache, we'll also add this user into the redis ie user : all the users this user if following
+    - CDC captures this change and adds it into user followers table, which is the picked up by cdc and consumed by the flink node partitioned on user id
 5. Search flow
     - Service directly hits the elastic search which internally parses the query and gives the response
     - Since elastic search takes care of the distributed systems part of the things, we should'nt care about this that much
 
 Further notes:
 - The popular users problem is called Justin Bieber problem
-- We can shard the user follower postgres basis the follower id, if the load is too high
-
+- Popular posts can be mostly predetermined by checking the user followers count, top posts can be cached into redis cache
+- Feed is read directly from the in mem cache servers
 
 
