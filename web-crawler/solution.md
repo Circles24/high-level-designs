@@ -69,6 +69,10 @@ Domain config
 3. importance - 8 bytes
 4. frequency - 8 bytes
 
+Domain Robots config
+    domain - 8 bytes
+    config - 200 bytes
+
 ## Observations and design highlights
 1. Since the system is responsible for crawling the entire web, we would need hundreds of servers fetching data from the web and persisting them into a high write thoughput object store and persistent store
 2. Since each web page contains multiple links we get a graph of pages linked together, after fetching each page, we should extract out all the links and push them to process ahead
@@ -78,16 +82,18 @@ Domain config
 6. Each crawl batch should not contain more than a single url for a domain else we might be bombaring that server with requests
 7. Assigner should also check if the url adheres to robots.txt policies for the given domain
 8. Post fetching we should be persisting the content into an object store for further processing and indexing
-9. Bloom filter can help up check if certain url has been fetched in certain time
+9. Bloom filter can help up check if certain url has been fetched in this crawl session
 10. Seeder server can trigger the pipeline by feeding the seed urls to the system
 11. Ticker system makes sure that we are processing the fast changes websites frequently by ingesting those urls frequently
+12. We'll keep DLQ for failed messages which would be picked up by a scheduler which will take care of the backoff part
+13. After certain retries we'll move these entries into a final DLQ, which wont be processed
 
 ## Datastore
 1. Object store for web content
 2. Cassandra for crawl details
 3. Postgres for keeping the domain configurations
 4. Redis to cache the domain details
-5. Bloom filters for quick lookup by urls for current crawl
+5. Bloom filters for quick lookup by url for current crawl
 
 ## Architecture diagram
 
@@ -99,12 +105,13 @@ Domain config
 3. Filter
 4. Feeder
 5. Spider
+6. Parser
 
 ## Flows
 
-1. Post creation flow
+1. Crawl flow 
     - If we want to kick off a new crawl session, Seeder injects seed urls into the suggestion layer
-    - Filter system, checks if the url has been crawled in this session
+    - Filter system, checks if the url has already been crawled in this session
     - Filter system checks if the domain needs to be crawled at all basis last crawled date, importance and freq of updates
     - Filter matches the urls against the cache of Robots.txt so that crawl adheres to the robots.txt file
     - The urls that pass these rules are sent to the Feeder system
@@ -117,9 +124,11 @@ Domain config
     - Spider collects a feed from the feeder
     - Spider divides it into mini batches
     - Spider starts fetching these urls
+    - The endpoints which fail are sent back to a DLQ with added exp back off time and jitter
     - Spider writes the content of each page into an object store
     - Spider then makes an entry into the crawl Cassandra DB, which operates in leaderless mode with parition by domain
-    - Spider fetches all the nested urls from the webpage and pushes them into the suggestion queue
+    - Spider pushes then an event into parser queue
+    - Parser picks up the event, first it fetches the webpage from object store, then fetches all the nested urls from the webpage and pushes them into the suggestion queue
 2. Ticker URL injection
     - Ticker keeps track of important websites which update frequently, it on a periodic basis keep injecting those freq changign urls into the suggestion queue
 
